@@ -1,5 +1,5 @@
 # coding:utf-8
-# [1]必要なライブラリのインポート
+# [0]必要なライブラリのインポート
 import gym  # 倒立振子(cartpole)の実行環境
 import numpy as np
 import time
@@ -12,15 +12,16 @@ from collections import deque
 
 from keras import backend as K
 
-
+# [1]損失関数の定義
 # 損失関数に勾配クリップしたhuber関数を使用します
 def huberloss(y_true, y_pred):
-    dif=K.abs(y_pred-y_true)
-    error=dif+K.log(1.0+K.exp(-2.0*dif))
+    return K.mean(K.minimum(K.square(y_pred-y_true), K.abs(y_pred-y_true)), axis=1)
 
+# 近似huber関数
+def smooth_huberloss(y_true, y_pred):
+    dif = K.abs(y_pred-y_true)
+    error = dif+K.log(1.0+K.exp(-2.0*dif))
     return K.mean(error, axis=1)
-    # return K.mean((1.0/2*K.square(y_pred-y_true)), axis=1)
-    # return K.mean(K.minimum(1.0/2*K.square(y_pred-y_true), K.abs(y_pred-y_true)), axis=1)
 
 
 # [2]Q関数をディープラーニングのネットワークをクラスとして定義
@@ -101,10 +102,7 @@ islearned = 0  # 学習が終わったフラグ
 isrender = 0  # 描画フラグ
 # ---
 hidden_size = 16               # Q-networkの隠れ層のニューロンの数
-#learning_rate = 0.0001         # Q-networkの学習係数
-
 learning_rate = 0.00001         # Q-networkの学習係数
-
 memory_size = 10000            # バッファーメモリの大きさ
 batch_size = 32                # Q-networkを更新するバッチの大記載
 
@@ -141,7 +139,7 @@ for episode in range(num_episodes):  # 試行数分繰り返す
 
         # 報酬を設定し、与える
         if done:
-            next_state = np.dzeros(state.shape)  # 次の状態s_{t+1}はない
+            next_state = np.zeros(state.shape)  # 次の状態s_{t+1}はない
             if t < 195:
                 reward = -1  # 報酬クリッピング、報酬は1, 0, -1に固定
             else:
