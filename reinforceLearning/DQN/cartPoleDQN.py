@@ -17,12 +17,6 @@ from keras import backend as K
 def huberloss(y_true, y_pred):
     return K.mean(K.minimum(K.square(y_pred-y_true), K.abs(y_pred-y_true)), axis=1)
 
-# 近似huber関数
-def smooth_huberloss(y_true, y_pred):
-    dif = K.abs(y_pred-y_true)
-    error = dif+K.log(1.0+K.exp(-2.0*dif))
-    return K.mean(error, axis=1)
-
 
 # [2]Q関数をディープラーニングのネットワークをクラスとして定義
 class QNetwork:
@@ -37,7 +31,6 @@ class QNetwork:
 
     # 重みの学習
     def replay(self, memory, batch_size, gamma, targetQN):
-        # Qネットワークの学習 小川ここを別クラスにしたい、DDQNにもしたい
         inputs = np.zeros((batch_size, 4))
         targets = np.zeros((batch_size, 2))
         mini_batch = memory.sample(batch_size)
@@ -48,9 +41,12 @@ class QNetwork:
 
             if not (next_state_b == np.zeros(state_b.shape)).all(axis=1):
                 # 価値計算（DDQNにも対応できるように、行動決定のQネットワークと価値観数のQネットワークは分離）
-                target = reward_b + gamma * np.amax(targetQN.model.predict(next_state_b)[0])
-            targets[i] = self.model.predict(state_b)
-            targets[i][action_b] = target
+                retmainQs = self.model.predict(next_state_b)[0]
+                next_action = np.argmax(retmainQs)  # 最大の報酬を返す行動を選択する
+                target = reward_b + gamma * targetQN.model.predict(next_state_b)[0][next_action]
+                
+            targets[i] = self.model.predict(state_b)    # Qネットワークの出力
+            targets[i][action_b] = target               # 教師信号
             self.model.fit(inputs, targets, epochs=1, verbose=0)  # epochsは訓練データの反復回数、verbose=0は表示なしの設定
 
 
@@ -107,8 +103,8 @@ memory_size = 10000            # バッファーメモリの大きさ
 batch_size = 32                # Q-networkを更新するバッチの大記載
 
 # [4.2]Qネットワークとメモリ、Actorの生成--------------------------------------------------------
-mainQN = QNetwork(hidden_size=hidden_size, learning_rate=learning_rate)     # 価値を計算するQネットワーク
-targetQN = QNetwork(hidden_size=hidden_size, learning_rate=learning_rate)   # 行動を決定するQネットワーク
+mainQN = QNetwork(hidden_size=hidden_size, learning_rate=learning_rate)     # メインのQネットワーク
+targetQN = QNetwork(hidden_size=hidden_size, learning_rate=learning_rate)   # 価値を計算するQネットワーク
 # plot_model(mainQN, to_file='Qnetwork.png', show_shapes=True)        # Qネットワークの可視化
 memory = Memory(max_size=memory_size)
 actor = Actor()
@@ -128,14 +124,9 @@ for episode in range(num_episodes):  # 試行数分繰り返す
             time.sleep(0.1)
             print(state[0, 0])  # カートのx位置を出力するならコメントはずす
 
-        action = actor.get_action(state, episode, targetQN)   # 時刻tでの行動を決定する
+        action = actor.get_action(state, episode, mainQN)   # 時刻tでの行動を決定する
         next_state, reward, done, info = env.step(action)   # 行動a_tの実行による、s_{t+1}, _R{t}を計算する
         next_state = np.reshape(next_state, [1, 4])     # list型のstateを、1行4列の行列に変換
-
-        # 中央にとどめる報酬(端にいきだしたら、失敗にする)
-        #if not islearned:
-        #    if state[0, 0] > 0.3 or state[0, 0] < -0.3:
-        #        done = 1   # 終了
 
         # 報酬を設定し、与える
         if done:
