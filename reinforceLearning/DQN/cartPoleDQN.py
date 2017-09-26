@@ -105,7 +105,7 @@ batch_size = 32                # Q-networkを更新するバッチの大記載
 # [4.2]Qネットワークとメモリ、Actorの生成--------------------------------------------------------
 mainQN = QNetwork(hidden_size=hidden_size, learning_rate=learning_rate)     # メインのQネットワーク
 targetQN = QNetwork(hidden_size=hidden_size, learning_rate=learning_rate)   # 価値を計算するQネットワーク
-# plot_model(mainQN, to_file='Qnetwork.png', show_shapes=True)        # Qネットワークの可視化
+plot_model(mainQN.model, to_file='Qnetwork.png', show_shapes=True)        # Qネットワークの可視化
 memory = Memory(max_size=memory_size)
 actor = Actor()
 
@@ -164,7 +164,7 @@ for episode in range(num_episodes):  # 試行数分繰り返す
         if isrender == 0:   # 学習済みフラグを更新
             isrender = 1
 
-            env = wrappers.Monitor(env, './movie/cartpole-experiment-1') #動画保存する場合
+            env = wrappers.Monitor(env, './movie/cartpoleDQN')  # 動画保存する場合
             # 10エピソードだけでどんな挙動になるのか見たかったら、以下のコメントを外す
             # if episode>10:
             #    if isrender == 0:
