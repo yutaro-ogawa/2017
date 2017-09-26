@@ -8,7 +8,7 @@ from keras.layers import Dense
 from keras.optimizers import Adam
 from keras.utils import plot_model
 from collections import deque
-# from gym import wrappers  # gymの画像保存
+from gym import wrappers  # gymの画像保存
 
 from keras import backend as K
 
@@ -84,7 +84,7 @@ class Actor:
 
 # [4] メイン関数開始----------------------------------------------------
 # [4.1] 初期設定--------------------------------------------------------
-DQN_MODE = 0    # 1がDQN、0がDDQNです
+DQN_MODE = 1    # 1がDQN、0がDDQNです
 LENDER_MODE = 1 # 0は学習後も描画なし、1は学習終了後に描画する
 
 env = gym.make('CartPole-v0')
@@ -164,7 +164,7 @@ for episode in range(num_episodes):  # 試行数分繰り返す
         if isrender == 0:   # 学習済みフラグを更新
             isrender = 1
 
-            # env = wrappers.Monitor(env, './movie/cartpole-experiment-1') #動画保存する場合
+            env = wrappers.Monitor(env, './movie/cartpole-experiment-1') #動画保存する場合
             # 10エピソードだけでどんな挙動になるのか見たかったら、以下のコメントを外す
             # if episode>10:
             #    if isrender == 0:
