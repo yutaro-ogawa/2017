@@ -84,11 +84,11 @@ class Actor:
 
 # [4] メイン関数開始----------------------------------------------------
 # [4.1] 初期設定--------------------------------------------------------
-DQN_MODE = 1    # 1がDQN、0がDDQNです
+DQN_MODE = 0    # 1がDQN、0がDDQNです
 LENDER_MODE = 1 # 0は学習後も描画なし、1は学習終了後に描画する
 
 env = gym.make('CartPole-v0')
-num_episodes = 1000  # 総試行回数
+num_episodes = 299  # 総試行回数
 max_number_of_steps = 200  # 1試行のstep数
 goal_average_reward = 195  # この報酬を超えると学習終了
 num_consecutive_iterations = 10  # 学習完了評価の平均計算を行う試行回数
