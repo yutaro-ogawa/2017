@@ -9,14 +9,19 @@ from keras.optimizers import Adam
 from keras.utils import plot_model
 from collections import deque
 from gym import wrappers  # gymの画像保存
-
 from keras import backend as K
+import tensorflow as tf
+
 
 # [1]損失関数の定義
-# 損失関数に勾配クリップしたhuber関数を使用します
+# 損失関数にhuber関数を使用します 参考https://github.com/jaara/AI-blog/blob/master/CartPole-DQN.py
 def huberloss(y_true, y_pred):
-    return K.mean(K.minimum(K.square(y_pred-y_true), K.abs(y_pred-y_true)), axis=1)
-
+    err = y_true - y_pred
+    cond = K.abs(err) < 1.0
+    L2 = 0.5 * K.square(err)
+    L1 = (K.abs(err) - 0.5)
+    loss = tf.where(cond, L2, L1)  # Keras does not cover where function in tensorflow :-(
+    return K.mean(loss)
 
 # [2]Q関数をディープラーニングのネットワークをクラスとして定義
 class QNetwork:
@@ -84,7 +89,7 @@ class Actor:
 
 # [4] メイン関数開始----------------------------------------------------
 # [4.1] 初期設定--------------------------------------------------------
-DQN_MODE = 0    # 1がDQN、0がDDQNです
+DQN_MODE = 1    # 1がDQN、0がDDQNです
 LENDER_MODE = 1 # 0は学習後も描画なし、1は学習終了後に描画する
 
 env = gym.make('CartPole-v0')
