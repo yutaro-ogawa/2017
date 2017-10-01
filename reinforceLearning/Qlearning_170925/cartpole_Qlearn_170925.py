@@ -35,13 +35,13 @@ def get_action(next_state, episode):
 
 
 # [3]Qテーブルを更新する関数 -------------------------------------
-def update_Qtable(q_table, state, action, next_state):
+def update_Qtable(q_table, state, action, reward, next_state):
     gamma = 0.99
     alpha = 0.5
     next_Max_Q=max(q_table[next_state][0],q_table[next_state][1] )
     q_table[state, action] = (1 - alpha) * q_table[state, action] +\
             alpha * (reward + gamma * next_Max_Q)
-   
+
     return q_table
 
 # [4]. メイン関数開始 パラメータ設定--------------------------------------------------------
@@ -91,13 +91,13 @@ for episode in range(num_episodes):  #試行数分繰り返す
 
         # 離散状態s_{t+1}を求め、Q関数を更新する
         next_state = digitize_state(observation)  #t+1での観測状態を、離散値に変換
-        q_table = update_Qtable(q_table, state, action, next_state)
-        
+        q_table = update_Qtable(q_table, state, action, reward, next_state)
+
         #  次の行動a_{t+1}を求める 
         action = get_action(next_state, episode)    # a_{t+1} 
-        
+
         state = next_state
-        
+
         #終了時の処理
         if done:
             print('%d Episode finished after %f time steps / mean %f' %
