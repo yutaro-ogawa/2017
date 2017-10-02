@@ -1,9 +1,11 @@
-# coding:utf-8
+    # coding:utf-8
 # [0]ライブラリのインポート
-import gym  #倒立振子(cartpole)の実行環境
+import gym  # 倒立振子(cartpole)の実行環境
 from gym import wrappers  #gymの画像保存
 import numpy as np
 import time
+from collections import deque
+
 
 
 # [1]Q関数を離散化して定義する関数　------------
@@ -42,22 +44,22 @@ class Memory:
     def add(self, experience):
         self.buffer.append(experience)
 
-    def sample(self, batch_size):
-        idx = np.random.choice(np.arange(len(self.buffer)), size=batch_size, replace=False)
-        return [self.buffer[ii] for ii in idx]
+    def sample(self):
+        return self.buffer.pop()  # 最後尾のメモリを取り出す
 
     def len(self):
         return len(self.buffer)
 
 
-
-# [3]Qテーブルを更新する関数(SARSA) ＊Qlearningと異なる＊ -------------------------------------
-def update_Qtable_sarsa(q_table, state, action, reward, next_state, next_action):
+# [3]Qテーブルを更新する(モンテカルロ法) ＊Qlearningと異なる＊ -------------------------------------
+def update_Qtable_montecarlo(q_table, memory, episode_reward):
     gamma = 0.99
     alpha = 0.5
-    q_table[state, action] = (1 - alpha) * q_table[state, action] +\
-            alpha * (reward + gamma * q_table[next_state, next_action])
 
+    while (memory.len() > 0):
+        (state, action) = memory.sample()
+        q_table[state, action] = q_table[state, action] + alpha*(episode_reward-q_table[state, action])
+        episode_reward = episode_reward*gamma   # 時間割引をする
     return q_table
 
 
@@ -69,6 +71,8 @@ num_episodes = 2000  #総試行回数
 goal_average_reward = 195  #この報酬を超えると学習終了（中心への制御なし）
 # 状態を6分割^（4変数）にデジタル変換してQ関数（表）を作成
 num_dizitized = 6  #分割数
+memory_size = 200            # バッファーメモリの大きさ
+memory = Memory(max_size=memory_size)
 q_table = np.random.uniform(low=-1, high=1, size=(num_dizitized**4, env.action_space.n))
 total_reward_vec = np.zeros(num_consecutive_iterations)  #各試行の報酬を格納
 final_x = np.zeros((num_episodes, 1))  #学習後、各試行のt=200でのｘの位置を格納
@@ -90,6 +94,10 @@ for episode in range(num_episodes):  #試行数分繰り返す
             time.sleep(0.1)
             print (observation[0])  #カートのx位置を出力
 
+
+        # メモリに現在の状態と行う行動を記録する
+        memory.add((state, action))
+
         # 行動a_tの実行により、s_{t+1}, r_{t}などを計算する
         observation, reward, done, info = env.step(action)
 
@@ -98,25 +106,23 @@ for episode in range(num_episodes):  #試行数分繰り返す
             if t < 195:
                 reward = -200  #こけたら罰則
             else:
-                reware = 1  #立ったまま終了時は罰則はなし
+                reward = 1  #立ったまま終了時は罰則はなし
         else:
             reward = 1  #各ステップで立ってたら報酬追加
+            # 次の行動と状態に更新
+            next_state = digitize_state(observation)  # t+1での観測状態を、離散値に変換
+            next_action = get_action(next_state, episode)  # 次の行動a_{t+1}を求める
+            action = next_action  # a_{t+1}
+            state = next_state  # s_{t+1}
 
         episode_reward += reward  #報酬を追加
 
-        # 離散状態s_{t+1}を求める
-        next_state = digitize_state(observation)  #t+1での観測状態を、離散値に変換
-
-        #　＊ここがQlearningと異なる＊
-        next_action = get_action(next_state, episode)    # 次の行動a_{t+1}を求める
-        q_table = update_Qtable_sarsa(q_table, state, action, reward, next_state, next_action)
-
-        # 次の行動と状態に更新
-        action = next_action    # a_{t+1}
-        state = next_state      # s_{t+1}
 
         # 終了時の処理
         if done:
+            # これまでの行動の記憶と、最終的な結果からQテーブルを更新していく
+            q_table = update_Qtable_montecarlo(q_table, memory, episode_reward)
+
             print('%d Episode finished after %f time steps / mean %f' %
                   (episode, t + 1, total_reward_vec.mean()))
             total_reward_vec = np.hstack((total_reward_vec[1:],
