@@ -83,7 +83,7 @@ for episode in range(num_episodes):  #試行数分繰り返す
             if t < 195:
                 reward = -200  #こけたら罰則
             else:
-                reware = 1  #立ったまま終了時は罰則はなし
+                reward = 1  #立ったまま終了時は罰則はなし
         else:
             reward = 1  #各ステップで立ってたら報酬追加
 
