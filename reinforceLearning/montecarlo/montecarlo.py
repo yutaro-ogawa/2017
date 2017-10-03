@@ -52,14 +52,18 @@ class Memory:
 
 
 # [3]Qテーブルを更新する(モンテカルロ法) ＊Qlearningと異なる＊ -------------------------------------
-def update_Qtable_montecarlo(q_table, memory, episode_reward):
+def update_Qtable_montecarlo(q_table, memory):
     gamma = 0.99
     alpha = 0.5
+    total_reward_t = 0
 
     while (memory.len() > 0):
-        (state, action) = memory.sample()
-        q_table[state, action] = q_table[state, action] + alpha*(episode_reward-q_table[state, action])
-        episode_reward = episode_reward*gamma   # 時間割引をする
+        (state, action, reward) = memory.sample()
+        total_reward_t = gamma * total_reward_t       # 時間割引率をかける
+        # Q関数を更新
+        q_table[state, action] = q_table[state, action] + alpha*(reward+total_reward_t-q_table[state, action])
+        total_reward_t = total_reward_t + reward    # ステップtより先でもらえた報酬の合計を更新
+
     return q_table
 
 
@@ -71,7 +75,7 @@ num_episodes = 2000  #総試行回数
 goal_average_reward = 195  #この報酬を超えると学習終了（中心への制御なし）
 # 状態を6分割^（4変数）にデジタル変換してQ関数（表）を作成
 num_dizitized = 6  #分割数
-memory_size = 200            # バッファーメモリの大きさ
+memory_size = max_number_of_steps            # バッファーメモリの大きさ
 memory = Memory(max_size=memory_size)
 q_table = np.random.uniform(low=-1, high=1, size=(num_dizitized**4, env.action_space.n))
 total_reward_vec = np.zeros(num_consecutive_iterations)  #各試行の報酬を格納
@@ -95,9 +99,6 @@ for episode in range(num_episodes):  #試行数分繰り返す
             print (observation[0])  #カートのx位置を出力
 
 
-        # メモリに現在の状態と行う行動を記録する
-        memory.add((state, action))
-
         # 行動a_tの実行により、s_{t+1}, r_{t}などを計算する
         observation, reward, done, info = env.step(action)
 
@@ -107,21 +108,26 @@ for episode in range(num_episodes):  #試行数分繰り返す
                 reward = -200  #こけたら罰則
             else:
                 reward = 1  #立ったまま終了時は罰則はなし
+
         else:
             reward = 1  #各ステップで立ってたら報酬追加
-            # 次の行動と状態に更新
-            next_state = digitize_state(observation)  # t+1での観測状態を、離散値に変換
-            next_action = get_action(next_state, episode)  # 次の行動a_{t+1}を求める
-            action = next_action  # a_{t+1}
-            state = next_state  # s_{t+1}
+
+
+        # メモリに、現在の状態と行った行動、得た報酬を記録する
+        memory.add((state, action, reward))
+
+        # 次ステップへ行動と状態を更新
+        next_state = digitize_state(observation)  # t+1での観測状態を、離散値に変換
+        next_action = get_action(next_state, episode)  # 次の行動a_{t+1}を求める
+        action = next_action  # a_{t+1}
+        state = next_state  # s_{t+1}
 
         episode_reward += reward  #報酬を追加
-
 
         # 終了時の処理
         if done:
             # これまでの行動の記憶と、最終的な結果からQテーブルを更新していく
-            q_table = update_Qtable_montecarlo(q_table, memory, episode_reward)
+            q_table = update_Qtable_montecarlo(q_table, memory)
 
             print('%d Episode finished after %f time steps / mean %f' %
                   (episode, t + 1, total_reward_vec.mean()))
