@@ -143,7 +143,7 @@ for episode in range(num_episodes):  #試行数分繰り返す
         islearned = 1
         #np.savetxt('learned_Q_table.csv',q_table, delimiter=",") #Qtableの保存する場合
         if isrender == 0:
-            #env = wrappers.Monitor(env, './movie/cartpole-experiment-1') #動画保存する場合
+            # env = wrappers.Monitor(env, './movie/cartpole-experiment-1') #動画保存する場合
             isrender = 1
     #10エピソードだけでどんな挙動になるのか見たかったら、以下のコメントを外す
     #if episode>10:
