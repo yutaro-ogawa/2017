@@ -126,7 +126,7 @@ mainQN = QNetwork(hidden_size=hidden_size, learning_rate=learning_rate)     # �
 targetQN = QNetwork(hidden_size=hidden_size, learning_rate=learning_rate)   # 価値を計算するQネットワーク
 
 mainQN.model.summary()
-#plot_model(mainQN.model, to_file='Qnetwork.png', show_shapes=True)        # Qネットワークの可視化
+plot_model(mainQN.model, to_file='Qnetwork.png', show_shapes=True)        # Qネットワークの可視化
 
 memory = Memory(max_size=memory_size)
 actor = Actor()
