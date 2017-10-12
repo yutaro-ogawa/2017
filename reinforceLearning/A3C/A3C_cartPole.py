@@ -291,12 +291,12 @@ envs = [Environment() for i in range(THREADS)]
 opts = [Optimizer() for i in range(OPTIMIZERS)]
 
 for o in opts:
-    o.start()
+    o.start()   # Threadのstar()関数です。その後run()が呼び出されます。run()はstop()が呼ばれるまで、何度もrunEpisode()を繰り返します。
 
 for e in envs:
     e.start()
 
-time.sleep(RUN_TIME)
+time.sleep(RUN_TIME)    # RUN_TIME=30秒の間、メインスレッドの処理を止めておきます
 
 for e in envs:
     e.stop()
