@@ -19,6 +19,10 @@ from keras import backend as K
 
 # -- constants
 ENV = 'CartPole-v0'
+NUM_STATES = gym.make(ENV).observation_space.shape[0]     # CartPoleは4状態
+NUM_ACTIONS = gym.make(ENV).action_space.n        # CartPoleは、右に左に押す2アクション
+NONE_STATE = np.zeros(NUM_STATES)
+
 
 RUN_TIME = 30
 THREADS = 8
@@ -31,7 +35,7 @@ N_STEP_RETURN = 8
 GAMMA_N = GAMMA ** N_STEP_RETURN
 
 EPS_START = 0.4
-EPS_STOP = .15
+EPS_END = .15
 EPS_STEPS = 75000
 
 MIN_BATCH = 32
@@ -47,21 +51,22 @@ class Brain:
     lock_queue = threading.Lock()
 
     def __init__(self):
+
         self.session = tf.Session()
         K.set_session(self.session)
         K.manual_variable_initialization(True)
 
         self.model = self._build_model()
         self.graph = self._build_graph(self.model)
-
         self.session.run(tf.global_variables_initializer())
         self.default_graph = tf.get_default_graph()
 
-        self.default_graph.finalize()  # avoid modifications
+        #self.default_graph.finalize()  # avoid modifications
+        self.weights = self.model.get_weights()  # ネットワークの重みを保存
 
     def _build_model(self):
 
-        l_input = Input(batch_shape=(None, NUM_STATE))
+        l_input = Input(batch_shape=(None, NUM_STATES))
         l_dense = Dense(16, activation='relu')(l_input)
 
         out_actions = Dense(NUM_ACTIONS, activation='softmax')(l_dense)
@@ -73,7 +78,7 @@ class Brain:
         return model
 
     def _build_graph(self, model):
-        s_t = tf.placeholder(tf.float32, shape=(None, NUM_STATE))
+        s_t = tf.placeholder(tf.float32, shape=(None, NUM_STATES))
         a_t = tf.placeholder(tf.float32, shape=(None, NUM_ACTIONS))
         r_t = tf.placeholder(tf.float32, shape=(None, 1))  # not immediate, but discounted n step reward
 
@@ -99,26 +104,32 @@ class Brain:
             time.sleep(0)  # yield
             return
 
-        with self.lock_queue:
+        with self.lock_queue:   # optimizerから同時に呼び出されないように、排他ロックする
+
             if len(self.train_queue[0]) < MIN_BATCH:  # more thread could have passed without lock
                 return  # we can't yield inside lock
 
             s, a, r, s_, s_mask = self.train_queue
             self.train_queue = [[], [], [], [], []]
 
-        s = np.vstack(s)
-        a = np.vstack(a)
-        r = np.vstack(r)
-        s_ = np.vstack(s_)
-        s_mask = np.vstack(s_mask)
+            s = np.vstack(s)
+            a = np.vstack(a)
+            r = np.vstack(r)
+            s_ = np.vstack(s_)
+            s_mask = np.vstack(s_mask)
 
-        if len(s) > 5 * MIN_BATCH: print("Optimizer alert! Minimizing batch of %d" % len(s))
+            if len(s) > 5 * MIN_BATCH: print("Optimizer alert! Minimizing batch of %d" % len(s))
 
-        v = self.predict_v(s_)
-        r = r + GAMMA_N * v * s_mask  # set v to 0 where s_ is terminal state
+            v = self.predict_v(s_)
+            r = r + GAMMA_N * v * s_mask  # set v to 0 where s_ is terminal state
 
-        s_t, a_t, r_t, minimize = self.graph
-        self.session.run(minimize, feed_dict={s_t: s, a_t: a, r_t: r})
+            s_t, a_t, r_t, minimize = self.graph
+
+            #self.weights = self.model.get_weights()
+            #self.model.set_weights(self.weights)
+            self.session.run(minimize, feed_dict={s_t: s, a_t: a, r_t: r})
+
+            #self.weights = self.model.get_weights()
 
     def train_push(self, s, a, r, s_):
         with self.lock_queue:
@@ -138,6 +149,12 @@ class Brain:
             p, v = self.model.predict(s)
             return p, v
 
+    def predict_p(self, s, weights):
+        with self.default_graph.as_default():
+            self.model.set_weights(weights)
+            p, v = self.model.predict(s)
+            return p
+
     def predict_p(self, s):
         with self.default_graph.as_default():
             p, v = self.model.predict(s)
@@ -154,13 +171,16 @@ frames = 0
 
 
 class Agent:
-    def __init__(self, eps_start, eps_end, eps_steps):
-        self.eps_start = eps_start
-        self.eps_end = eps_end
-        self.eps_steps = eps_steps
+    def __init__(self, agent_brain):
+        self.eps_start = EPS_START
+        self.eps_end = EPS_END
+        self.eps_steps = EPS_STEPS
 
         self.memory = []  # used for n_step return
         self.R = 0.
+
+        self.agent_weights = agent_brain.weights
+
 
     def getEpsilon(self):
         if (frames >= self.eps_steps):
@@ -178,6 +198,7 @@ class Agent:
 
         else:
             s = np.array([s])
+            #p = brain.predict_p(s,brain.weights)[0]
             p = brain.predict_p(s)[0]
 
             # a = np.argmax(p)
@@ -220,21 +241,24 @@ class Agent:
             # possible edge case - if an episode ends in <N steps, the computation is incorrect
 
 
-# ---------
-class Environment(threading.Thread):
-    stop_signal = False
+# --実際に行動して、経験を積むスレッドクラスです　-------
+class Environment(threading.Thread):    # threadを継承しています
+    stop_signal = False     # 終了命令のフラグ
+    total_reward_vec = np.zeros(5)   # 総報酬を10試行分格納して、平均総報酬をもとめる
+    total_trial_each_thread = 0     # 各スレッドの試行数
 
-    def __init__(self, render=False, eps_start=EPS_START, eps_end=EPS_STOP, eps_steps=EPS_STEPS):
-        threading.Thread.__init__(self)
-
+    def __init__(self, thread_name, thread_brain, render):
+        threading.Thread.__init__(self, name=thread_name)
         self.render = render
         self.env = gym.make(ENV)
-        self.agent = Agent(eps_start, eps_end, eps_steps)
+        self.thread_brain = thread_brain
+        self.agent = Agent(self.thread_brain)
 
     def runEpisode(self):
-        s = self.env.reset()
 
+        s = self.env.reset()
         R = 0
+
         while True:
             time.sleep(THREAD_DELAY)  # yield
 
@@ -252,61 +276,77 @@ class Environment(threading.Thread):
             R += r
 
             if done or self.stop_signal:
+                self.total_reward_vec = np.hstack((self.total_reward_vec[1:], R))     # 0個目を破棄して新しい10個に
+                self.total_trial_each_thread += 1   # このスレッドの総試行回数を増やす
                 break
 
-        print("Total R:", R)
+        # 総試行数、スレッド名、今回の報酬を出力
+        # print(self.name+":今回の報酬R:"+str(R))
 
     def run(self):
         while not self.stop_signal:
-            self.runEpisode()
+            self.runEpisode()   # ずっとrunEpisode()を繰り返す
 
     def stop(self):
         self.stop_signal = True
 
 
-# ---------
-class Optimizer(threading.Thread):
+# --brainに最適化を指令するスレッドクラスです　-------
+class Optimizer(threading.Thread):  # pythonのthreadクラスを継承しています
     stop_signal = False
 
-    def __init__(self):
-        threading.Thread.__init__(self)
+    def __init__(self, thread_name):
+        threading.Thread.__init__(self, name=thread_name)
 
     def run(self):
         while not self.stop_signal:
-            brain.optimize()
+            brain.optimize()    # ずっとbrainを最適化し続ける
 
     def stop(self):
         self.stop_signal = True
 
 
-# -- main
-env_test = Environment(render=True, eps_start=0., eps_end=0.)
-NUM_STATE = env_test.env.observation_space.shape[0]
-NUM_ACTIONS = env_test.env.action_space.n
-NONE_STATE = np.zeros(NUM_STATE)
+# -- main ここからメイン関数です。
+total_trial = 0         # 総試行数
+averaged_reward = 0     # 全スレッドの平均の総報酬
 
-brain = Brain()  # brain is global in A3C
+brain = Brain()  # すべてのスレッドで共有する学習するニューラルネットワークのクラスです
 
-envs = [Environment() for i in range(THREADS)]
-opts = [Optimizer() for i in range(OPTIMIZERS)]
-
-for o in opts:
-    o.start()   # Threadのstar()関数です。その後run()が呼び出されます。run()はstop()が呼ばれるまで、何度もrunEpisode()を繰り返します。
-
-for e in envs:
-    e.start()
-
-time.sleep(RUN_TIME)    # RUN_TIME=30秒の間、メインスレッドの処理を止めておきます
-
-for e in envs:
-    e.stop()
-for e in envs:
-    e.join()
+env_test = Environment(thread_name="学習後スレッド", thread_brain=brain, render=True)   # 学習終了後のCartPoleを描画するのに使います
+envs = [Environment(thread_name="Envスレッド"+str(i+1), thread_brain=brain, render=False) for i in range(THREADS)]      # スレッドクラスを継承したもの複数生成
+opts = [Optimizer(thread_name="Optスレッド"+str(i+1)) for i in range(OPTIMIZERS)]     # スレッドクラスを継承したもの複数生成
 
 for o in opts:
-    o.stop()
-for o in opts:
-    o.join()
+    o.start()   # Threadのstar()関数です。その後run()が呼び出されます。run()はstop()が呼ばれるまで、何度もrunEpisode()を繰り返します
 
-print("Training finished")
-env_test.run()
+for e in envs:
+    e.start()   # Threadのstar()関数です。その後run()が呼び出されます。run()はstop()が呼ばれるまで、続きます
+
+
+while True:     # 学習が終わるまで回し続けます
+    time.sleep(1.0)  # 10秒の間、メインスレッドの処理を止めて、各スレッドを動かします
+    for e in envs:  # 全スレッドの学習度をチェックします
+        total_trial += e.total_trial_each_thread        # 各スレッドの試行数を足す
+        averaged_reward += e.total_reward_vec.mean()    # 各スレッドの平均総報酬を足す
+
+    averaged_reward = averaged_reward / THREADS
+    print("総試行数：" + str(total_trial) + ":平均の総報酬：" + str(averaged_reward))
+    if averaged_reward > 195:  # 全スレッドの平均が195を越えたら学習終了
+        break
+    else:
+        total_trial = 0
+        averaged_reward = 0
+
+
+for e in envs:
+    e.stop()    # 全スレッドでstop_signalをTrueにします
+for e in envs:
+    e.join()    # 各スレッドが終了するまで待機します
+
+for o in opts:
+    o.stop()    # 全スレッドでstop_signalをTrueにします
+for o in opts:
+    o.join()    # 各スレッドが終了するまで待機します
+
+print("学習終了です。"+"総試行数：" + str(total_trial)+":学習の挙動を実行します")
+#env_test.run()  # 学習後の挙動を表示する
