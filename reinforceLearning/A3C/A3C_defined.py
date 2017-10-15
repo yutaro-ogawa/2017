@@ -90,7 +90,10 @@ class Brain:
         optimizer = tf.train.RMSPropOptimizer(LEARNING_RATE, decay=.99)
         minimize = optimizer.minimize(loss_total)
 
-        return s_t, a_t, r_t, minimize
+        #勾配を取得するのと、勾配を足す定義です
+        grads_and_vars = optimizer.compute_gradients(loss_total)
+        train_op = optimizer.apply_gradients(grads_and_vars)
+        return s_t, a_t, r_t, minimize, grads_and_vars, train_op
 
     def optimize(self):     # ネットワークの重みを学習・更新します
         if len(self.train_queue[0]) < MIN_BATCH:    # データがたまっていない場合は更新しない
@@ -115,10 +118,14 @@ class Brain:
         # N-1ステップあとまでの時間割引総報酬rに、Nから先に得られるであろう総報酬vに割引N乗したものを足します
         r = r + GAMMA_N * v * s_mask  # set v to 0 where s_ is terminal state
 
-        s_t, a_t, r_t, minimize = self.graph
+        s_t, a_t, r_t, minimize, grads_and_vars, train_op = self.graph
 
-        SESS.run(minimize, feed_dict={s_t: s, a_t: a, r_t: r})
+        #SESS.run(minimize, feed_dict={s_t: s, a_t: a, r_t: r})
+        SESS.run(train_op, feed_dict={s_t: s, a_t: a, r_t: r})
+
         #print(self.model.get_weights()[0])
+
+
 
     def train_push(self, s, a, r, s_):
         self.train_queue[0].append(s)
@@ -215,7 +222,7 @@ class Environment:
         s = self.env.reset()
         R = 0
         while True:
-            #time.sleep(THREAD_DELAY)  # yield
+            time.sleep(THREAD_DELAY)  # yield
 
             if self.flg_render:
                 self.env.render()   # 描画
@@ -253,7 +260,7 @@ class Worker:
 
         print(self.name)
 
-        for i in range(1000):
+        for i in range(700):
            self.environment.run()
         time.sleep(1)
 
@@ -283,7 +290,7 @@ with tf.device("/cpu:0"):
     #for i in range(N_WORKERS):
     for i in range(2):
         thread_name = "Envスレッド"+str(i+1)
-        #threads.append(Worker(thread_name, flg_render=False))
+        threads.append(Worker(thread_name, flg_render=False))
 
 # M2.TensolFlowでマルチスレッドを実行します
 COORD = tf.train.Coordinator()                  # TensolFlowでマルチスレッドにするための準備です
@@ -291,7 +298,8 @@ SESS.run(tf.global_variables_initializer())     # TensolFlowを使う場合、�
 
 running_threads = []
 for worker in threads:
-    t = threading.Thread(target=worker.run())
+    job = lambda: worker.run()
+    t = threading.Thread(target=job)
     t.start()
     running_threads.append(t)
 
