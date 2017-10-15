@@ -60,7 +60,6 @@ class Brain:
     def __init__(self):
         self.model = self._build_model()
         self.graph = self._build_graph(self.model)
-        self.weights = self.model.get_weights()  # ネットワークの重みを保存
 
     # 関数名がアンダースコア2つから始まるものは「外部から参照されない関数」、「1つは基本的に参照しない関数」という意味
     def _build_model(self):     # Kerasでネットワークの形を定義します
@@ -72,7 +71,7 @@ class Brain:
         model._make_predict_function()  # have to initialize before threading
         return model
 
-    def _build_graph(model):      # TensolFlowでネットワークの重みをどう学習させるのかを定義します
+    def _build_graph(self, model):      # TensolFlowでネットワークの重みをどう学習させるのかを定義します
         s_t = tf.placeholder(tf.float32, shape=(None, NUM_STATES))  # placeholderは変数が格納される予定地となります
         a_t = tf.placeholder(tf.float32, shape=(None, NUM_ACTIONS))
         r_t = tf.placeholder(tf.float32, shape=(None, 1))  # not immediate, but discounted n step reward
@@ -110,41 +109,28 @@ class Brain:
         # 経験の増加に対して、学習が追いついていない時はアラートします
         if len(s) > 5 * MIN_BATCH: print("Optimizer alert! Minimizing batch of %d" % len(s))
 
-        v = self.predict_v(s_)
+        # Nステップあとの状態s_から、その先得られるであろう時間割引総報酬vを求めます
+        _, v = self.model.predict(s)
+
+        # N-1ステップあとまでの時間割引総報酬rに、Nから先に得られるであろう総報酬vに割引N乗したものを足します
         r = r + GAMMA_N * v * s_mask  # set v to 0 where s_ is terminal state
+
         s_t, a_t, r_t, minimize = self.graph
 
-        #self.weights = self.model.get_weights()
-        #self.model.set_weights(self.weights)
-        self.session.run(minimize, feed_dict={s_t: s, a_t: a, r_t: r})
-
-        #self.weights = self.model.get_weights()
+        SESS.run(minimize, feed_dict={s_t: s, a_t: a, r_t: r})
+        #print(self.model.get_weights()[0])
 
     def train_push(self, s, a, r, s_):
-        with self.lock_queue:
-            self.train_queue[0].append(s)
-            self.train_queue[1].append(a)
-            self.train_queue[2].append(r)
+        self.train_queue[0].append(s)
+        self.train_queue[1].append(a)
+        self.train_queue[2].append(r)
 
-            if s_ is None:
-                self.train_queue[3].append(NONE_STATE)
-                self.train_queue[4].append(0.)
-            else:
-                self.train_queue[3].append(s_)
-                self.train_queue[4].append(1.)
-
-
-    def predict(self, s):
-            p, v = self.model.predict(s)
-            return p, v
-
-    def predict_p(self, s):
-            p, v = self.model.predict(s)
-            return p
-
-    def predict_v(self, s):
-            p, v = self.model.predict(s)
-            return v
+        if s_ is None:
+            self.train_queue[3].append(NONE_STATE)
+            self.train_queue[4].append(0.)
+        else:
+            self.train_queue[3].append(s_)
+            self.train_queue[4].append(1.)
 
 
 # --行動を決定するクラスです、CartPoleであれば、棒付き台車そのものになります　-------
@@ -153,8 +139,6 @@ class Agent:
         self.brain = Brain()    # 行動を決定するための脳（ニューラルネットワーク）
         self.memory = []        # s,a,r,s_の保存メモリ、　used for n_step return
         self.R = 0.             # 時間割引した、「いまからNステップ分あとまで」の総報酬R
-
-        self.agent_weights = self.brain.weights
 
     def act(self, s):   # ε-greedy法で行動を決定します
 
@@ -171,13 +155,18 @@ class Agent:
             return random.randint(0, NUM_ACTIONS - 1)   # ランダムに行動
         else:
             s = np.array([s])
-            p = self.brain.predict_p(s)[0]      # 状態sから行動確率pi=[右がよい確率 , 左がよい確率]をもとめる
-            # a = np.argmax(p)  # これだと確率最大の行動を、毎回選択
-            a = np.random.choice(NUM_ACTIONS, p=p)  # probability = p のこっちだと、確率pにしたがって、行動を選択
+            p, _ = self.brain.model.predict(s)
+
+            # a = np.argmax(p)
+            # これだと確率最大の行動を、毎回選択
+
+            a = np.random.choice(NUM_ACTIONS, p=p[0])
+            # probability = p のこのコードだと、確率p[0]にしたがって、行動を選択
+            # pにはいろいろな情報が入っているが確率は0番目にある
             return a
 
-    def train(self, s, a, r, s_):
-        def get_sample(memory, n):
+    def train(self, s, a, r, s_):   # advantageを考慮したs,a,r,s_をbrainに与える
+        def get_sample(memory, n):  # advantageを考慮し、メモリからnステップ後の状態とnステップ後までのRを取得する関数
             s, a, _, _ = memory[0]
             _, _, _, s_ = memory[n - 1]
             return s, a, self.R, s_
@@ -190,32 +179,71 @@ class Agent:
         # 前ステップの「時間割引Nステップ分の総報酬R」を使用して、現ステップのRを計算
         self.R = (self.R + r * GAMMA_N) / GAMMA
 
+        # advantageを考慮しながら、brainに経験を入力する
         if s_ is None:
             while len(self.memory) > 0:
                 n = len(self.memory)
                 s, a, r, s_ = get_sample(self.memory, n)
                 self.brain.train_push(s, a, r, s_)
-
                 self.R = (self.R - self.memory[0][2]) / GAMMA
                 self.memory.pop(0)
 
-            self.R = 0
+            self.R = 0 #これいる？
 
         if len(self.memory) >= N_STEP_RETURN:
             s, a, r, s_ = get_sample(self.memory, N_STEP_RETURN)
             self.brain.train_push(s, a, r, s_)
-
             self.R = self.R - self.memory[0][2]
             self.memory.pop(0)
-
             # possible edge case - if an episode ends in <N steps, the computation is incorrect
 
+        self.brain.optimize()   # ネットワークの重みを更新
+
+# --CartPoleを実行する環境です　-------
+class Environment:
+    stop_signal = False     # 終了命令のフラグ
+    total_reward_vec = np.zeros(5)  # 総報酬を10試行分格納して、平均総報酬をもとめる
+    total_trial_each_thread = 0     # 各環境の試行数
+
+    def __init__(self,name, flg_render):
+        self.name = name
+        self.flg_render = flg_render
+        self.env = gym.make(ENV)
+        self.agent = Agent()    # 環境内で行動するagentを生成
+
+    def run(self):
+        s = self.env.reset()
+        R = 0
+        while True:
+            #time.sleep(THREAD_DELAY)  # yield
+
+            if self.flg_render:
+                self.env.render()   # 描画
+
+            a = self.agent.act(s)
+            s_, r, done, info = self.env.step(a)
+
+            if done:  # terminal state
+                s_ = None
+
+            self.agent.train(s, a, r, s_)
+
+            s = s_
+            R += r
+
+            if done or self.stop_signal:
+                self.total_reward_vec = np.hstack((self.total_reward_vec[1:], R))  # 0個目を破棄して新しい10個に
+                self.total_trial_each_thread += 1  # このスレッドの総試行回数を増やす
+                break
+        # 総試行数、スレッド名、今回の報酬を出力
+        print("スレッド："+self.name + "、試行数："+str(self.total_trial_each_thread) + "、今回の報酬R:" + str(R)+"、平均報酬："+str(self.total_reward_vec.mean()))
 
 
 # --スレッドになるクラスです　-------
 class Worker:
-    def __init__(self, thread_name, render):
+    def __init__(self, thread_name, flg_render):
         self.name = thread_name
+        self.environment = Environment(self.name,flg_render)
 
     def run(self):
         global var
@@ -223,7 +251,11 @@ class Worker:
         if self.name != SERVER_THREAD_NAME:
             var = var + self.name
 
-        print(self.name+var+str(frames))
+        print(self.name)
+
+        for i in range(1000):
+           self.environment.run()
+        time.sleep(1)
 
 
 # -- main ここからメイン関数です------------------------------
@@ -245,12 +277,13 @@ with tf.device("/cpu:0"):
     threads= []     # 並列して走るスレッド
     # Serverとなるスレッド
     thread_name = SERVER_THREAD_NAME
-    threads.append(Worker(thread_name, render=False))
+    threads.append(Worker(thread_name, flg_render=False))
 
     # 経験を積むスレッド
-    for i in range(N_WORKERS):
+    #for i in range(N_WORKERS):
+    for i in range(2):
         thread_name = "Envスレッド"+str(i+1)
-        threads.append(Worker(thread_name, render=False))
+        #threads.append(Worker(thread_name, flg_render=False))
 
 # M2.TensolFlowでマルチスレッドを実行します
 COORD = tf.train.Coordinator()                  # TensolFlowでマルチスレッドにするための準備です
