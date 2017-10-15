@@ -3,7 +3,7 @@
 # OpenGym CartPole-v0 with A3C on CPU
 # -----------------------------------
 #
-# A3C implementation with TensolFlow multi threads.
+# A3C implementation with TensorFlow multi threads.
 #
 # Made as part of Qiita article, available at
 # https://??/
@@ -18,7 +18,7 @@ from keras.layers import *
 from keras import backend as K
 
 import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'    # TensolFlow高速化用のワーニングを表示させない
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'    # TensorFlow高速化用のワーニングを表示させない
 
 # -- constants of Game
 ENV = 'CartPole-v0'
@@ -27,9 +27,9 @@ NUM_STATES = env.observation_space.shape[0]     # CartPoleは4状態
 NUM_ACTIONS = env.action_space.n        # CartPoleは、右に左に押す2アクション
 NONE_STATE = np.zeros(NUM_STATES)
 
-# -- constants of TensolFlow multi threads
+# -- constants of TensorFlow multi threads
 N_WORKERS = 8
-SERVER_THREAD_NAME = "パラメーターサーバースレッド"
+SERVER_THREAD_NAME = "server_thread"
 
 
 
@@ -53,13 +53,16 @@ LOSS_ENTROPY = .01  # entropy coefficient
 
 
 
-# --TensolFlowのDeep Neural Networkのクラスです　-------
+# --TensorFlowのDeep Neural Networkのクラスです　-------
 class Brain:
     train_queue = [[], [], [], [], []]  # s, a, r, s', s' terminal mask
 
-    def __init__(self):
+    def __init__(self, name):
         self.model = self._build_model()
-        self.graph = self._build_graph(self.model)
+        with tf.variable_scope(name):   # スレッド名で重み変数に名前を与え、識別します（Name Space）
+            self.graph = self._build_graph(self.model)
+
+
 
     # 関数名がアンダースコア2つから始まるものは「外部から参照されない関数」、「1つは基本的に参照しない関数」という意味
     def _build_model(self):     # Kerasでネットワークの形を定義します
@@ -71,7 +74,7 @@ class Brain:
         model._make_predict_function()  # have to initialize before threading
         return model
 
-    def _build_graph(self, model):      # TensolFlowでネットワークの重みをどう学習させるのかを定義します
+    def _build_graph(self, model):      # TensorFlowでネットワークの重みをどう学習させるのかを定義します
         s_t = tf.placeholder(tf.float32, shape=(None, NUM_STATES))  # placeholderは変数が格納される予定地となります
         a_t = tf.placeholder(tf.float32, shape=(None, NUM_ACTIONS))
         r_t = tf.placeholder(tf.float32, shape=(None, 1))  # not immediate, but discounted n step reward
@@ -84,16 +87,24 @@ class Brain:
         loss_policy = - log_prob * tf.stop_gradient(advantage)  # maximize policy
         loss_value = LOSS_V * tf.square(advantage)  # minimize value error
         entropy = LOSS_ENTROPY * tf.reduce_sum(p * tf.log(p + 1e-10), axis=1, keep_dims=True)  # maximize entropy (regularization)
-        loss_total = tf.reduce_mean(loss_policy + loss_value + entropy)
+        self.loss_total = tf.reduce_mean(loss_policy + loss_value + entropy)
 
         # loss関数を最小化していくoptimizerの定義です
         optimizer = tf.train.RMSPropOptimizer(LEARNING_RATE, decay=.99)
-        minimize = optimizer.minimize(loss_total)
+        minimize = optimizer.minimize(self.loss_total)
+
+        # ネットワークの重み変数を扱えるように定義します
+        self.weights_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES)  # 本当はserverとthreadで分けるとこ
 
         #勾配を取得するのと、勾配を足す定義です
-        grads_and_vars = optimizer.compute_gradients(loss_total)
-        train_op = optimizer.apply_gradients(grads_and_vars)
-        return s_t, a_t, r_t, minimize, grads_and_vars, train_op
+        self.grads = tf.gradients(self.loss_total, self.weights_params)     # 勾配を取得
+            #grads_and_vars = optimizer.compute_gradients(loss_total)
+        self.update_weight_params = optimizer.apply_gradients(zip(self.grads, self.weights_params))    # zipで各変数ごとに計算
+            #train_op = optimizer.apply_gradients(grads_and_vars)
+
+        self.pull_global_weight_params = [l_p.assign(g_p) for l_p, g_p in zip(self.weights_params, self.weights_params)]
+
+        return s_t, a_t, r_t, minimize, self.grads, self.update_weight_params
 
     def optimize(self):     # ネットワークの重みを学習・更新します
         if len(self.train_queue[0]) < MIN_BATCH:    # データがたまっていない場合は更新しない
@@ -118,13 +129,22 @@ class Brain:
         # N-1ステップあとまでの時間割引総報酬rに、Nから先に得られるであろう総報酬vに割引N乗したものを足します
         r = r + GAMMA_N * v * s_mask  # set v to 0 where s_ is terminal state
 
-        s_t, a_t, r_t, minimize, grads_and_vars, train_op = self.graph
+        s_t, a_t, r_t, minimize, grads, update_weight_params = self.graph
 
         #SESS.run(minimize, feed_dict={s_t: s, a_t: a, r_t: r})
-        SESS.run(train_op, feed_dict={s_t: s, a_t: a, r_t: r})
+
+
+        SESS.run(update_weight_params, feed_dict={s_t: s, a_t: a, r_t: r})
 
         #print(self.model.get_weights()[0])
 
+
+    def predict_p(self, s):    # 状態sから各actionの確率piベクトルを返します
+        p, v = self.model.predict(s)
+        return p
+
+    def pull_global(self):  # localスレッドがglobalの重みを取得する
+        SESS.run(self.pull_global_weight_params)
 
 
     def train_push(self, s, a, r, s_):
@@ -142,8 +162,8 @@ class Brain:
 
 # --行動を決定するクラスです、CartPoleであれば、棒付き台車そのものになります　-------
 class Agent:
-    def __init__(self):
-        self.brain = Brain()    # 行動を決定するための脳（ニューラルネットワーク）
+    def __init__(self, name):
+        self.brain = Brain(name)    # 行動を決定するための脳（ニューラルネットワーク）
         self.memory = []        # s,a,r,s_の保存メモリ、　used for n_step return
         self.R = 0.             # 時間割引した、「いまからNステップ分あとまで」の総報酬R
 
@@ -162,7 +182,7 @@ class Agent:
             return random.randint(0, NUM_ACTIONS - 1)   # ランダムに行動
         else:
             s = np.array([s])
-            p, _ = self.brain.model.predict(s)
+            p = self.brain.predict_p(s)
 
             # a = np.argmax(p)
             # これだと確率最大の行動を、毎回選択
@@ -212,17 +232,24 @@ class Environment:
     total_reward_vec = np.zeros(5)  # 総報酬を10試行分格納して、平均総報酬をもとめる
     total_trial_each_thread = 0     # 各環境の試行数
 
-    def __init__(self,name, flg_render):
+    def __init__(self, name, flg_render):
         self.name = name
         self.flg_render = flg_render
         self.env = gym.make(ENV)
-        self.agent = Agent()    # 環境内で行動するagentを生成
+        self.agent = Agent(name)    # 環境内で行動するagentを生成
 
     def run(self):
         s = self.env.reset()
         R = 0
         while True:
-            time.sleep(THREAD_DELAY)  # yield
+
+            #if self.total_trial_each_thread == 10:
+            self.agent.brain.pull_global()
+
+           # if self.total_trial_each_thread == 100:
+           #     self.agent.brain.set_weights(self.weights)
+
+            time.sleep(THREAD_DELAY)  # 止めて他のスレッドを実行する
 
             if self.flg_render:
                 self.env.render()   # 描画
@@ -288,13 +315,13 @@ with tf.device("/cpu:0"):
 
     # 経験を積むスレッド
     #for i in range(N_WORKERS):
-    for i in range(2):
+    for i in range(1):
         thread_name = "Envスレッド"+str(i+1)
-        threads.append(Worker(thread_name, flg_render=False))
+        #threads.append(Worker(thread_name, flg_render=False))
 
-# M2.TensolFlowでマルチスレッドを実行します
-COORD = tf.train.Coordinator()                  # TensolFlowでマルチスレッドにするための準備です
-SESS.run(tf.global_variables_initializer())     # TensolFlowを使う場合、最初に変数初期化をして、実行します
+# M2.TensorFlowでマルチスレッドを実行します
+COORD = tf.train.Coordinator()                  # TensorFlowでマルチスレッドにするための準備です
+SESS.run(tf.global_variables_initializer())     # TensorFlowを使う場合、最初に変数初期化をして、実行します
 
 running_threads = []
 for worker in threads:
