@@ -52,6 +52,8 @@ class Brain:
 
     def __init__(self):
 
+        coord=tf.train.Coordinator()
+
         self.session = tf.Session()
         K.set_session(self.session)
         K.manual_variable_initialization(True)
