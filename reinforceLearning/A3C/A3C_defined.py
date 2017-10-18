@@ -39,23 +39,17 @@ GAMMA = 0.99
 N_STEP_RETURN = 5
 GAMMA_N = GAMMA ** N_STEP_RETURN
 
-
 # -- constants of TensorFlow multi threads
 
 
 # -- constants of TensorFlow multi threads
 #N_WORKERS = multiprocessing.cpu_count()
 N_WORKERS = 8
-
 print(str(N_WORKERS))
-RUN_TIME = 30
-THREAD_DELAY = 0.001
 
 EPS_START = 0.5
 EPS_END = 0.0
 EPS_STEPS = 200*N_WORKERS
-
-
 
 
 # --グローバルなTensorFlowのDeep Neural Networkのクラスです　-------
@@ -87,7 +81,6 @@ class LocalBrain:
         with tf.name_scope(name):
             self.train_queue = [[], [], [], [], []]  # s, a, r, s', s' terminal mask
             K.set_session(SESS)
-            #K.manual_variable_initialization(True)
             self.model = self._build_model()  # ニューラルネットワークの形を決定
             self._build_graph(name, parameter_server)  # ネットワークの学習やメソッドを定義
 
@@ -116,9 +109,6 @@ class LocalBrain:
         entropy = LOSS_ENTROPY * tf.reduce_sum(p * tf.log(p + 1e-10), axis=1, keep_dims=True)  # maximize entropy (regularization)
         self.loss_total = tf.reduce_mean(loss_policy + loss_value + entropy)
 
-        # loss関数を最小化していくoptimizerの定義です
-        #self.optimizer = tf.train.RMSPropOptimizer(LEARNING_RATE, decay=.99)
-
         # 重みの変数を定義
         self.weights_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=name)  # serverのパラメータを宣言
         # 勾配を取得する定義
@@ -132,9 +122,15 @@ class LocalBrain:
         self.pull_global_weight_params = [l_p.assign(g_p)
                                           for l_p, g_p in zip(self.weights_params, parameter_server.weights_params)]
 
+        # localBrainの重み変数の値を、PrameterServerにコピーする定義
+        self.push_local_weight_params = [g_p.assign(l_p)
+                                          for g_p, l_p in zip(parameter_server.weights_params, self.weights_params)]
 
     def pull_parameter_server(self):  # localスレッドがglobalの重みを取得する
         SESS.run(self.pull_global_weight_params)
+
+    def push_parameter_server(self):  # localスレッドの重みをglobalにコピーする
+        SESS.run(self.push_local_weight_params)
 
     def update_parameter_server(self):     # localbrainの勾配でParameterServerの重みを学習・更新します
         if len(self.train_queue[0]) < MIN_BATCH:    # データがたまっていない場合は更新しない
@@ -149,9 +145,6 @@ class LocalBrain:
         s_ = np.vstack(s_)
         s_mask = np.vstack(s_mask)
 
-        # 経験の増加に対して、学習が追いついていない時はアラートします
-        if len(s) > 5 * MIN_BATCH: print("Optimizer alert! Minimizing batch of %d" % len(s))
-
         # Nステップあとの状態s_から、その先得られるであろう時間割引総報酬vを求めます
         _, v = self.model.predict(s_)
 
@@ -160,7 +153,6 @@ class LocalBrain:
 
         feed_dict = {self.s_t: s, self.a_t: a, self.r_t: r}     # 使用するデータ
         SESS.run(self.update_global_weight_params, feed_dict)   # ParameterServerの重みを更新
-        #SESS.run(self.optimizer.apply_gradients(zip(self.grads, parameter_server.weights_params)), feed_dict)
 
     def predict_p(self, s):    # 状態sから各actionの確率piベクトルを返します
         p, v = self.model.predict(s)
@@ -186,9 +178,9 @@ class Agent:
         self.memory = []        # s,a,r,s_の保存メモリ、　used for n_step return
         self.R = 0.             # 時間割引した、「いまからNステップ分あとまで」の総報酬R
 
-    def act(self, s):   # ε-greedy法で行動を決定します
+    def act(self, s):
 
-        if frames >= EPS_END:
+        if frames >= EPS_END:   # ε-greedy法で行動を決定します
             eps = EPS_END
         else:
             eps = EPS_START + frames * (EPS_END - EPS_START) / EPS_STEPS  # linearly interpolate
@@ -200,9 +192,10 @@ class Agent:
             p = self.brain.predict_p(s)
 
             # a = np.argmax(p)  # これだと確率最大の行動を、毎回選択
+
             a = np.random.choice(NUM_ACTIONS, p=p[0])
             # probability = p のこのコードだと、確率p[0]にしたがって、行動を選択
-            # pにはいろいろな情報が入っているが確率は0番目にある
+            # pにはいろいろな情報が入っているが確率のベクトルは要素0番目
             return a
 
     def advantage_push_local_brain(self, s, a, r, s_):   # advantageを考慮したs,a,r,s_をbrainに与える
@@ -241,18 +234,20 @@ class Agent:
 # --CartPoleを実行する環境です、TensorFlowのスレッドになります　-------
 class Environment:
     stop_signal = False     # 終了命令のフラグ
-    total_reward_vec = np.zeros(5)  # 総報酬を10試行分格納して、平均総報酬をもとめる
+    total_reward_vec = np.zeros(10)  # 総報酬を10試行分格納して、平均総報酬をもとめる
     total_trial_each_thread = 0     # 各環境の試行数
 
-    def __init__(self, name, flg_render, parameter_server):
+    def __init__(self, name, flg_render, parameter_server, learning):
         self.name = name
         self.flg_render = flg_render
         self.env = gym.make(ENV)
         self.agent = Agent(name, parameter_server)    # 環境内で行動するagentを生成
-        self.agent.brain.pull_parameter_server()  # ParameterSeverの重みを自身のLocalBrainにコピー
+        self.learning = learning
 
     def run(self):
+        self.agent.brain.pull_parameter_server()  # ParameterSeverの重みを自身のLocalBrainにコピー
         global frames  # セッション全体での試行数、global変数を書き換える場合は、関数内でglobal宣言が必要です
+        global stop_signal
 
         s = self.env.reset()
         R = 0
@@ -260,6 +255,7 @@ class Environment:
         while True:
             if self.flg_render:
                 self.env.render()   # 描画
+                time.sleep(0.1)
 
             a = self.agent.act(s)   # 行動を決定
             s_, r, done, info = self.env.step(a)   # 行動を実施
@@ -279,28 +275,48 @@ class Environment:
 
             s = s_
             R += r
-            #print(str(self.name)+"::"+str(step))
-            if step % 4 == 0:
-                self.agent.brain.update_parameter_server()
-                self.agent.brain.pull_parameter_server()
-                #time.sleep(THREAD_DELAY)  # 一定時間止めて、他のスレッドが実行できるように
+            if done or (step % 10 == 0):
+                if self.learning and (stop_signal is False):
+                    self.agent.brain.update_parameter_server()
+                    self.agent.brain.pull_parameter_server()
 
-            if done or self.stop_signal:
+            if done:
                 self.total_reward_vec = np.hstack((self.total_reward_vec[1:], step))  # トータル報酬の古いのを破棄して最新5個を保持
                 self.total_trial_each_thread += 1  # このスレッドの総試行回数を増やす
                 break
         # 総試行数、スレッド名、今回の報酬を出力
         print("スレッド："+self.name + "、試行数："+str(self.total_trial_each_thread) + "、今回のステップ:" + str(step)+"、平均ステップ："+str(self.total_reward_vec.mean()))
 
+        # 平均報酬が一定を越えたら終了
+        if self.total_reward_vec.mean() > 195:
+            stop_signal = True
+            time.sleep(2.0)
+            self.agent.brain.push_parameter_server()
+
 
 # --スレッドになるクラスです　-------
 class Worker_thread:
-    def __init__(self, thread_name, flg_render, parameter_server):
-        self.environment = Environment(thread_name, flg_render, parameter_server)
+    def __init__(self, thread_name, flg_render, parameter_server, learning):
+        self.environment = Environment(thread_name, flg_render, parameter_server, learning)
+        self.learning = learning
 
     def run(self):
-        for i in range(100):
-            self.environment.run()
+        #for i in range(100):
+        while True:
+            if not(stop_signal) and self.learning:     # training threadが走る
+                self.environment.run()
+
+            if not(stop_signal) and not(self.learning):    # learned_threadを止めておく
+                time.sleep(1.0)
+
+            if stop_signal and self.learning:     # training_threadを止めておく
+                time.sleep(1.0)
+
+            if stop_signal and not(self.learning):     # learned_threadが走る
+                time.sleep(3.0)
+                self.environment.run()
+
+
 
 
 # -- main ここからメイン関数です------------------------------
@@ -308,12 +324,11 @@ class Worker_thread:
 total_trial = 0         # 総試行数
 averaged_reward = 0     # 全スレッドの平均の総報酬
 frames = 0              # 全スレッドで共有して使用する総ステップ数
+stop_signal = False
+
 
 # TensorFlowのセッション開始
 SESS = tf.Session()
-#K.set_session(SESS)
-#K.manual_variable_initialization(True)
-
 
 # M1.スレッドを作成します
 with tf.device("/cpu:0"):
@@ -322,7 +337,11 @@ with tf.device("/cpu:0"):
     threads= []     # 並列して走るスレッド
     for i in range(N_WORKERS):
         thread_name = "local_thread"+str(i+1)
-        threads.append(Worker_thread(thread_name=thread_name, flg_render=False, parameter_server=parameter_server))
+        threads.append(Worker_thread(thread_name=thread_name, flg_render=False, parameter_server=parameter_server,
+                                     learning=True))
+
+    threads.append(Worker_thread(thread_name="learned_thread", flg_render=True, parameter_server=parameter_server,
+                                 learning=False))
 
 # M2.TensorFlowでマルチスレッドを実行します
 COORD = tf.train.Coordinator()                  # TensorFlowでマルチスレッドにするための準備です
