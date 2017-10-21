@@ -52,13 +52,11 @@ EPS_STEPS = 200*N_WORKERS
 class ParameterServer:
     def __init__(self):
         with tf.variable_scope("parameter_server"):      # スレッド名で重み変数に名前を与え、識別します（Name Space）
-            K.set_session(SESS)
             self.model = self._build_model()            # ニューラルネットワークの形を決定
-            SESS.run(tf.global_variables_initializer())
 
-            # serverのパラメータを宣言
-            self.weights_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="parameter_server")
-            self.optimizer = tf.train.RMSPropOptimizer(LEARNING_RATE, RMSPropDecaly)    # loss関数を最小化していくoptimizerの定義です
+        # serverのパラメータを宣言
+        self.weights_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="parameter_server")
+        self.optimizer = tf.train.RMSPropOptimizer(LEARNING_RATE, RMSPropDecaly)    # loss関数を最小化していくoptimizerの定義です
 
     # 関数名がアンダースコア2つから始まるものは「外部から参照されない関数」、「1つは基本的に参照しない関数」という意味
     def _build_model(self):     # Kerasでネットワークの形を定義します
@@ -67,7 +65,6 @@ class ParameterServer:
         out_actions = Dense(NUM_ACTIONS, activation='softmax')(l_dense)
         out_value = Dense(1, activation='linear')(l_dense)
         model = Model(inputs=[l_input], outputs=[out_actions, out_value])
-        model.summary()
         plot_model(model, to_file='A3C.png', show_shapes=True)  # Qネットワークの可視化
         return model
 
@@ -203,7 +200,7 @@ class Agent:
         self.memory.append((s, a_cats, r, s_))
 
         # 前ステップの「時間割引Nステップ分の総報酬R」を使用して、現ステップのRを計算
-        self.R = (self.R + r * GAMMA_N) / GAMMA # r0は後ろで引き算している
+        self.R = (self.R + r * GAMMA_N) / GAMMA     # r0はあとで引き算している、この式はヤロミルさんのサイトを参照
 
         # advantageを考慮しながら、LocalBrainに経験を入力する
         if s_ is None:
@@ -239,15 +236,11 @@ class Environment:
         global frames  # セッション全体での試行数、global変数を書き換える場合は、関数内でglobal宣言が必要です
         global isLearned
 
-
         if (self.thread_type is 'test') and (self.count_trial_each_thread == 0):
             self.env.reset()
             self.env = gym.wrappers.Monitor(self.env, './movie/A3C')  # 動画保存する場合
 
         s = self.env.reset()
-
-
-
         R = 0
         step = 0
         while True:
@@ -263,7 +256,7 @@ class Environment:
             r = 0
             if done:  # terminal state
                 s_ = None
-                if step < 195:
+                if step < 199:
                     r = -1
                 else:
                     r = 1
@@ -286,7 +279,7 @@ class Environment:
         print("スレッド："+self.name + "、試行数："+str(self.count_trial_each_thread) + "、今回のステップ:" + str(step)+"、平均ステップ："+str(self.total_reward_vec.mean()))
 
         # スレッドで平均報酬が一定を越えたら終了
-        if self.total_reward_vec.mean() > 195:
+        if self.total_reward_vec.mean() > 199:
             isLearned = True
             time.sleep(2.0)     # この間に他のlearningスレッドが止まります
             self.agent.brain.push_parameter_server()    # この成功したスレッドのパラメータをparameter-serverに渡します
