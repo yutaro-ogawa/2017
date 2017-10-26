@@ -1,6 +1,6 @@
 # coding:utf-8
 # -----------------------------------
-# OpenGym CartPole-v0 with A3C on CPU
+# OpenGym CartPole-v0 with PPO on CPU
 # -----------------------------------
 #
 # A3C implementation with TensorFlow multi threads.
@@ -29,10 +29,10 @@ NONE_STATE = np.zeros(NUM_STATES)
 
 # -- constants of LocalBrain
 MIN_BATCH = 5
-LOSS_V = .5  # v loss coefficient
-LOSS_ENTROPY = .01  # entropy coefficient
-LEARNING_RATE = 5e-3
-RMSPropDecaly = 0.99
+EPSILON = 0.2 # loss_CPIをCLIPする範囲を決めます
+LOSS_V = 0.2  # v loss coefficient
+LOSS_ENTROPY = 0.01  # entropy coefficient
+LEARNING_RATE = 2e-3
 
 # -- params of Advantage-ベルマン方程式
 GAMMA = 0.99
@@ -40,13 +40,12 @@ N_STEP_RETURN = 5
 GAMMA_N = GAMMA ** N_STEP_RETURN
 
 N_WORKERS = 8   # スレッドの数
-Tmax = 10*N_WORKERS   # 各スレッドの更新ステップ間隔
+Tmax = 3*N_WORKERS   # 各スレッドの更新ステップ間隔
 
 # ε-greedyのパラメータ
 EPS_START = 0.5
 EPS_END = 0.0
 EPS_STEPS = 200*N_WORKERS
-
 
 
 # --各スレッドで共有するTensorFlowのDeep Neural Networkのクラスです　-------
@@ -56,7 +55,8 @@ class Brain:
             self.train_queue = [[], [], [], [], []]  # s, a, r, s', s' terminal mask
             K.set_session(SESS)
             self.model = self._build_model()  # ニューラルネットワークの形を決定
-            self.opt = tf.train.RMSPropOptimizer(LEARNING_RATE, RMSPropDecaly)  # loss関数を最小化していくoptimizerの定義です
+            self.opt = tf.train.AdamOptimizer(learning_rate=LEARNING_RATE)  # loss関数を最小化していくoptimizerの定義です
+            self.prob_old = 1
             self.graph = self.build_graph()  # ネットワークの学習やメソッドを定義
 
     def _build_model(self):     # Kerasでネットワークの形を定義します
@@ -66,6 +66,7 @@ class Brain:
         out_value = Dense(1, activation='linear')(l_dense)
         model = Model(inputs=[l_input], outputs=[out_actions, out_value])
         model._make_predict_function()  # have to initialize before threading
+        plot_model(model, to_file='PPO.png', show_shapes=True)  # Qネットワークの可視化
         return model
 
     def build_graph(self):      # TensorFlowでネットワークの重みをどう学習させるのかを定義します
@@ -76,23 +77,23 @@ class Brain:
         p, v = self.model(self.s_t)
 
         # loss関数を定義します
-        log_prob = tf.log(tf.reduce_sum(p * self.a_t, axis=1, keep_dims=True) + 1e-10)
-        advantage = self.r_t - v
-        loss_policy = - log_prob * tf.stop_gradient(advantage)  # stop_gradientでadvantageは定数として扱います
+        advantage = tf.subtract(self.r_t , v)
+        self.prob = tf.multiply(p, self.a_t) + 1e-10
+        r_theta = tf.div(self.prob , self.prob_old)
+        loss_CPI = -tf.multiply(r_theta , tf.stop_gradient(advantage))  # stop_gradientでadvantageは定数として扱います
+
+        # CLIPした場合を計算して、小さい方を使用します。
+        r_clip = r_theta
+        tf.clip_by_value(r_clip, r_theta-EPSILON, r_theta+EPSILON)
+        clipped_loss_CPI = -tf.multiply(r_clip , tf.stop_gradient(advantage))  # stop_gradientでadvantageは定数として扱います
+        loss_CLIP = tf.reduce_mean(tf.minimum(loss_CPI, clipped_loss_CPI), axis=1, keep_dims=True)
+
         loss_value = LOSS_V * tf.square(advantage)  # minimize value error
         entropy = LOSS_ENTROPY * tf.reduce_sum(p * tf.log(p + 1e-10), axis=1, keep_dims=True)  # maximize entropy (regularization)
-        self.loss_total = tf.reduce_mean(loss_policy + loss_value + entropy)
+        self.loss_total = tf.reduce_mean(loss_CLIP + loss_value + entropy)
 
-        # 重みの変数を定義
-        self.weights_params = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="brain")  # serverのパラメータを宣言
-        # 勾配を取得する定義
-        self.grads = tf.gradients(self.loss_total, self.weights_params)
-
-        # 求めた勾配で重み変数を更新する定義
-        minimize = self.opt.minimize(self.loss_total)
-
+        minimize = self.opt.minimize(self.loss_total)   # 求めた勾配で重み変数を更新する定義
         return minimize
-
 
     def update_parameter_server(self):     # localbrainの勾配でParameterServerの重みを学習・更新します
         if len(self.train_queue[0]) < MIN_BATCH:    # データがたまっていない場合は更新しない
@@ -114,7 +115,8 @@ class Brain:
         feed_dict = {self.s_t: s, self.a_t: a, self.r_t: r}     # 重みの更新に使用するデータ
 
         minimize = self.graph
-        SESS.run(minimize, feed_dict)   # ParameterServerの重みを更新
+        SESS.run(minimize, feed_dict)   # Brainの重みを更新
+        self.prob_old = self.prob
 
     def predict_p(self, s):    # 状態sから各actionの確率pベクトルを返します
         p, v = self.model.predict(s)
