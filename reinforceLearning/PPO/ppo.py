@@ -205,7 +205,7 @@ class Environment:
 
         if (self.thread_type is 'test') and (self.count_trial_each_thread == 0):
             self.env.reset()
-           #self.env = gym.wrappers.Monitor(self.env, './movie/A3C')  # 動画保存する場合
+           #self.env = gym.wrappers.Monitor(self.env, './movie/PPO')  # 動画保存する場合
 
         s = self.env.reset()
         R = 0
@@ -233,7 +233,7 @@ class Environment:
 
             s = s_
             R += r
-            if done or (frames % Tmax == 0):  # 終了時がTmaxごとに、parameterServerの重みを更新し、それをコピーする
+            if done or (frames % Tmax == 0):  # 終了時がTmaxごとに、parameterServerの重みを更新
                 if not(isLearned) and self.thread_type is 'learning':
                     self.agent.brain.update_parameter_server()
 
