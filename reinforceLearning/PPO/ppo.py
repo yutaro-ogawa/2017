@@ -205,7 +205,7 @@ class Environment:
 
         if (self.thread_type is 'test') and (self.count_trial_each_thread == 0):
             self.env.reset()
-           #self.env = gym.wrappers.Monitor(self.env, './movie/A3C')  # 動画保存する場合
+            self.env = gym.wrappers.Monitor(self.env, './movie/A3C')  # 動画保存する場合
 
         s = self.env.reset()
         R = 0
